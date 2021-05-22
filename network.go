@@ -3,11 +3,18 @@ package main
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
 
 var n = 6
+var d = 3
+
+type Edge struct {
+	v1 int
+	v2 int
+}
 
 type Graph struct {
 	vertices []*Vertex
@@ -101,18 +108,6 @@ func (g *Graph) AddNode() (id int) {
 			g.vertices[newIndex].routingTable[i].changed = true
 		}
 	}
-	/*for i, r := range g.vertices[newIndex].routingTable {
-		r.senderIndex = newIndex
-		r.cost = math.MaxInt32
-		r.changed = false
-		r.dir = i
-		r.nextHop = -1
-		if i == newIndex {
-			r.cost = 0
-			r.nextHop = newIndex
-			r.changed = true
-		}
-	}*/
 	return
 }
 
@@ -120,19 +115,6 @@ func (g *Graph) AddEdge(v1, v2 int) {
 	//Chan to neighbour
 	g.vertices[v1].neighbours = append(g.vertices[v1].neighbours, &g.vertices[v2].in)
 	g.vertices[v2].neighbours = append(g.vertices[v2].neighbours, &g.vertices[v1].in)
-
-	//Routing table info for both vertices
-	/*g.vertices[v1].routingTable[v2].dir = v2
-	g.vertices[v1].routingTable[v2].nextHop = v2
-	g.vertices[v1].routingTable[v2].cost = 1
-	g.vertices[v1].routingTable[v2].senderIndex = v1
-	g.vertices[v1].routingTable[v2].changed = true
-
-	g.vertices[v2].routingTable[v1].nextHop = v1
-	g.vertices[v2].routingTable[v1].dir = v1
-	g.vertices[v2].routingTable[v1].cost = 1
-	g.vertices[v2].routingTable[v1].senderIndex = v2
-	g.vertices[v2].routingTable[v1].changed = true*/
 }
 
 func (g *Graph) Nodes() []int {
@@ -160,6 +142,30 @@ func main() {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
 	graph.AddEdge(nodes[n-1], nodes[0])
+
+	//Make all possible edges, and then shuffle them
+	allEdges := make([]Edge, 0)
+	for i := 0; i < n-1; i++ {
+		for j := i + 1; j < n; j++ {
+			if i != j {
+				allEdges = append(allEdges,
+					Edge{
+						v1: i,
+						v2: j,
+					})
+			}
+		}
+	}
+	fmt.Println(allEdges)
+	rand.Shuffle(len(allEdges), func(i, j int) {
+		allEdges[i], allEdges[j] = allEdges[j], allEdges[i]
+	})
+	fmt.Println(allEdges)
+
+	//Add extra edges
+	for i := 0; i < d; i++ {
+		graph.AddEdge(allEdges[i].v1, allEdges[i].v2)
+	}
 
 	for i, r := range graph.vertices {
 		fmt.Print("Vertex ", i, ": ")
