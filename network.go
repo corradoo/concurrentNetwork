@@ -8,8 +8,9 @@ import (
 	"time"
 )
 
-var n = 6
-var d = 3
+var n = 10
+var d = 5
+var hosts = 3
 
 type Edge struct {
 	v1 int
@@ -21,11 +22,16 @@ type Graph struct {
 }
 
 type Vertex struct {
-	index        int
-	in           chan []Routing
-	neighbours   []*chan []Routing
+	index       int
+	routingChan chan []Routing
+	//neighbours   []*chan []Routing
+	neighbours   []*Vertex
 	routingTable []Routing
 	m            sync.Mutex
+	packageChan  chan Package
+	hosts        []*Host
+	packageBuf   []Package
+	bufMutex     sync.Mutex
 }
 
 type Routing struct {
@@ -34,6 +40,24 @@ type Routing struct {
 	nextHop     int
 	cost        int
 	changed     bool
+}
+
+type Address struct {
+	r int
+	h int
+}
+
+type Package struct {
+	sender   Address
+	receiver Address
+	routers  []int
+}
+
+type Host struct {
+	id       int
+	routerId int
+	in       chan Package
+	out      *chan Package
 }
 
 func Sender(vertex *Vertex) {
@@ -53,7 +77,7 @@ func Sender(vertex *Vertex) {
 		if len(msg) > 0 {
 			fmt.Println("Vertex ", vertex.index, " sending: ", msg)
 			for _, out := range vertex.neighbours {
-				*out <- msg
+				out.routingChan <- msg
 			}
 		}
 	}
@@ -61,7 +85,7 @@ func Sender(vertex *Vertex) {
 
 func Receiver(vertex *Vertex) {
 	for {
-		msg := <-vertex.in
+		msg := <-vertex.routingChan
 		fmt.Println("Vertex ", vertex.index, "received: ", msg)
 
 		vertex.m.Lock()
@@ -79,6 +103,101 @@ func Receiver(vertex *Vertex) {
 		fmt.Println("Vertex ", vertex.index, "state: ", vertex.routingTable)
 	}
 }
+
+func PackageSender(vertex *Vertex) {
+	for {
+		var packToSend Package
+		if len(vertex.packageBuf) > 0 {
+			vertex.bufMutex.Lock()
+			packToSend = vertex.packageBuf[0]
+			vertex.bufMutex.Unlock()
+		} else {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		//Check if pack is for one of our hosts and send if so
+		if packToSend.receiver.r == vertex.index {
+			vertex.hosts[packToSend.receiver.h].in <- packToSend
+
+			//Remove from queue
+			vertex.bufMutex.Lock()
+			vertex.packageBuf = vertex.packageBuf[1:]
+			vertex.bufMutex.Unlock()
+
+			continue
+		}
+		vertex.m.Lock()
+		for _, r := range vertex.routingTable {
+			if r.dir == packToSend.receiver.r { // Find nextHop router
+				if r.nextHop == -1 { // Path not defined
+					vertex.m.Unlock()
+
+					fmt.Println("\tVertex(", vertex.index, ") UNDEFINED ROUTE TO: ", r.dir)
+					//Put package at the end of queue
+					vertex.bufMutex.Lock()
+					vertex.packageBuf = append(vertex.packageBuf, packToSend)
+					vertex.packageBuf = vertex.packageBuf[1:]
+					vertex.bufMutex.Unlock()
+					time.Sleep(500 * time.Millisecond)
+				} else { //Forward package to nextHop and delete from queue
+					//Send
+					sendToIndex := r.nextHop
+					vertex.m.Unlock()
+					for i, v := range vertex.neighbours {
+						if v.index == sendToIndex {
+							sendToIndex = i
+						}
+					}
+					//fmt.Println("\tVertex(",vertex.index,") TRY:\n", packToSend, " next hop:",vertex.neighbours[sendToIndex].index)
+					vertex.neighbours[sendToIndex].packageChan <- packToSend
+					//fmt.Println("\tVertex(",vertex.index,") Package sent:\n", packToSend)
+
+					//Remove from queue
+					vertex.bufMutex.Lock()
+					vertex.packageBuf = vertex.packageBuf[1:]
+					vertex.bufMutex.Unlock()
+				}
+			}
+		}
+	}
+}
+
+func PackageReceiver(vertex *Vertex) {
+	for {
+		newPack := <-vertex.packageChan
+		//fmt.Println("\tVertex(",vertex.index,") Package received:\n", newPack)
+		newPack.routers = append(newPack.routers, vertex.index)
+
+		vertex.bufMutex.Lock()
+		vertex.packageBuf = append(vertex.packageBuf, newPack)
+		vertex.bufMutex.Unlock()
+		//fmt.Println("\tVertex(",vertex.index,")", " buffer: ", vertex.packageBuf)
+	}
+}
+
+func HostRoutine(host *Host, r int, h int) {
+	fmt.Println("HOST nr ", host.id, " ROUTER ", host.routerId, " TO (", r, ", ", h, ")")
+	*host.out <- Package{
+		receiver: Address{r: r, h: h},
+		sender:   Address{r: host.routerId, h: host.id},
+		routers:  make([]int, 0),
+	}
+
+	for {
+		received := <-host.in
+		fmt.Println("HOST(", host.routerId, ",", host.id, ") Package received:\n", received)
+		newPack := Package{
+			receiver: Address{r: received.sender.r, h: received.sender.h},
+			sender:   Address{r: host.routerId, h: host.id},
+			routers:  make([]int, 0),
+		}
+		*host.out <- newPack
+		fmt.Println("HOST(", host.routerId, ",", host.id, ") Package sent back:\n", newPack)
+		time.Sleep(time.Millisecond * 500)
+	}
+}
+
 func New() *Graph {
 	return &Graph{
 		vertices: []*Vertex{},
@@ -89,10 +208,14 @@ func (g *Graph) AddNode() (id int) {
 	id = len(g.vertices)
 	g.vertices = append(g.vertices, &Vertex{
 		index:        id,
-		in:           make(chan []Routing),
-		neighbours:   make([]*chan []Routing, 0),
+		routingChan:  make(chan []Routing),
+		neighbours:   make([]*Vertex, 0),
 		routingTable: make([]Routing, 0),
+		packageChan:  make(chan Package),
+		hosts:        make([]*Host, 0),
 	})
+
+	//Neighbours
 	newIndex := len(g.vertices) - 1
 	for i := 0; i < n; i++ {
 		g.vertices[newIndex].routingTable = append(g.vertices[newIndex].routingTable, Routing{
@@ -108,13 +231,26 @@ func (g *Graph) AddNode() (id int) {
 			g.vertices[newIndex].routingTable[i].changed = true
 		}
 	}
+
+	//Hosts
+	//rand.Seed(time.Now().UnixNano())
+	//nr := //rand.Intn(3)
+	for i := 0; i < hosts; i++ {
+		g.vertices[newIndex].hosts = append(g.vertices[newIndex].hosts,
+			&Host{
+				id:       i,
+				routerId: newIndex,
+				in:       make(chan Package),
+				out:      &g.vertices[newIndex].packageChan,
+			})
+	}
 	return
 }
 
 func (g *Graph) AddEdge(v1, v2 int) {
 	//Chan to neighbour
-	g.vertices[v1].neighbours = append(g.vertices[v1].neighbours, &g.vertices[v2].in)
-	g.vertices[v2].neighbours = append(g.vertices[v2].neighbours, &g.vertices[v1].in)
+	g.vertices[v1].neighbours = append(g.vertices[v1].neighbours, g.vertices[v2])
+	g.vertices[v2].neighbours = append(g.vertices[v2].neighbours, g.vertices[v1])
 }
 
 func (g *Graph) Nodes() []int {
@@ -141,13 +277,13 @@ func main() {
 	for i := 0; i < n-1; i++ {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
-	graph.AddEdge(nodes[n-1], nodes[0])
+	//graph.AddEdge(nodes[n-1], nodes[0])
 
 	//Make all possible edges, and then shuffle them
 	allEdges := make([]Edge, 0)
 	for i := 0; i < n-1; i++ {
 		for j := i + 1; j < n; j++ {
-			if i != j {
+			if i != j && i+1 != j {
 				allEdges = append(allEdges,
 					Edge{
 						v1: i,
@@ -157,6 +293,7 @@ func main() {
 		}
 	}
 	fmt.Println(allEdges)
+	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(allEdges), func(i, j int) {
 		allEdges[i], allEdges[j] = allEdges[j], allEdges[i]
 	})
@@ -172,10 +309,36 @@ func main() {
 		fmt.Println(r.routingTable)
 	}
 
+	//Routing routines
 	for i := 0; i < n; i++ {
 		go Sender(graph.vertices[i])
 		go Receiver(graph.vertices[i])
 	}
+
+	//Forwarder routines
+	for i := 0; i < n; i++ {
+		go PackageSender(graph.vertices[i])
+		go PackageReceiver(graph.vertices[i])
+	}
+
+	//Hosts
+	for i := 0; i < n; i++ {
+		for k, host := range graph.vertices[i].hosts {
+			r := rand.Intn(n)
+			h := rand.Intn(hosts)
+			if r == host.routerId && h == host.id {
+				r++
+				r %= n
+			}
+			if k == 2 && i == 0 {
+				go HostRoutine(graph.vertices[0].hosts[2], 9, 2)
+			} else {
+				go HostRoutine(host, r, h)
+			}
+
+		}
+	}
+
 	fmt.Println()
 	<-done
 }
