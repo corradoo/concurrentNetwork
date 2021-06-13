@@ -2,15 +2,14 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
 	"sync"
 	"time"
 )
 
-var n = 10
-var d = 5
-var hosts = 3
+var n = 5
+var d = 2
+var hosts = 1
 
 type Edge struct {
 	v1 int
@@ -62,7 +61,7 @@ type Host struct {
 
 func Sender(vertex *Vertex) {
 	for {
-		time.Sleep(time.Millisecond * 500)
+		time.Sleep(time.Millisecond * 2000)
 		msg := make([]Routing, 0)
 		//crit section
 		vertex.m.Lock()
@@ -140,6 +139,7 @@ func PackageSender(vertex *Vertex) {
 					vertex.packageBuf = vertex.packageBuf[1:]
 					vertex.bufMutex.Unlock()
 					time.Sleep(500 * time.Millisecond)
+
 				} else { //Forward package to nextHop and delete from queue
 					//Send
 					sendToIndex := r.nextHop
@@ -147,8 +147,11 @@ func PackageSender(vertex *Vertex) {
 					for i, v := range vertex.neighbours {
 						if v.index == sendToIndex {
 							sendToIndex = i
+							//fmt.Println("\tVertex(",vertex.index,") CHOSED:\n", sendToIndex, " next hop:",vertex.neighbours[sendToIndex].index)
+							break
 						}
 					}
+					//
 					//fmt.Println("\tVertex(",vertex.index,") TRY:\n", packToSend, " next hop:",vertex.neighbours[sendToIndex].index)
 					vertex.neighbours[sendToIndex].packageChan <- packToSend
 					//fmt.Println("\tVertex(",vertex.index,") Package sent:\n", packToSend)
@@ -218,12 +221,20 @@ func (g *Graph) AddNode() (id int) {
 	//Neighbours
 	newIndex := len(g.vertices) - 1
 	for i := 0; i < n; i++ {
+		var hop, cost int
+		if i < newIndex {
+			hop = newIndex - 1
+			cost = newIndex - i
+		} else {
+			hop = newIndex + 1
+			cost = i - newIndex
+		}
 		g.vertices[newIndex].routingTable = append(g.vertices[newIndex].routingTable, Routing{
 			senderIndex: newIndex,
-			cost:        math.MaxInt32,
+			cost:        cost,
 			changed:     false,
 			dir:         i,
-			nextHop:     -1,
+			nextHop:     hop,
 		})
 		if i == newIndex {
 			g.vertices[newIndex].routingTable[i].cost = 0
@@ -233,8 +244,6 @@ func (g *Graph) AddNode() (id int) {
 	}
 
 	//Hosts
-	//rand.Seed(time.Now().UnixNano())
-	//nr := //rand.Intn(3)
 	for i := 0; i < hosts; i++ {
 		g.vertices[newIndex].hosts = append(g.vertices[newIndex].hosts,
 			&Host{
