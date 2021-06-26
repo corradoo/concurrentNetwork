@@ -9,7 +9,8 @@ import (
 
 var n = 5
 var d = 2
-var hosts = 1
+
+const hosts = 1
 
 type Edge struct {
 	v1 int
@@ -21,9 +22,8 @@ type Graph struct {
 }
 
 type Vertex struct {
-	index       int
-	routingChan chan []Routing
-	//neighbours   []*chan []Routing
+	index        int
+	routingChan  chan []Routing
 	neighbours   []*Vertex
 	routingTable []Routing
 	m            sync.Mutex
@@ -106,11 +106,12 @@ func Receiver(vertex *Vertex) {
 func PackageSender(vertex *Vertex) {
 	for {
 		var packToSend Package
+		vertex.bufMutex.Lock()
 		if len(vertex.packageBuf) > 0 {
-			vertex.bufMutex.Lock()
 			packToSend = vertex.packageBuf[0]
 			vertex.bufMutex.Unlock()
 		} else {
+			vertex.bufMutex.Unlock()
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -286,7 +287,6 @@ func main() {
 	for i := 0; i < n-1; i++ {
 		graph.AddEdge(nodes[i], nodes[i+1])
 	}
-	//graph.AddEdge(nodes[n-1], nodes[0])
 
 	//Make all possible edges, and then shuffle them
 	allEdges := make([]Edge, 0)
